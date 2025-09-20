@@ -1,0 +1,15 @@
+
+# Install virtual environment
+Step 1: in cmd run -> python -m venv venv
+
+# Activate virtual environment
+Step 2: in cmd run -> .\venv\Scripts\activate
+
+# Install dependencies on virtual environment
+Step 3: in cmd run -> pip install -r requirements.txt
+
+# Set up jupyter kernel to use notebooks
+Step 4: in cmd run -> python -m ipykernel install --user --name=btc-env --display-name "Python (btc-env)"
+
+# Configure Pycharm to use virtual env
+Step 5: in File => Settings => Project => Python Interpreter => Add Interpreter => Local Interpreter => Select Existing => Navigate to your projects venv python exe like: C:\Users\borja\PycharmProjects\bitcoin-predictor\venv\Scripts\python.exe
