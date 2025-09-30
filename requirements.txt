@@ -10,6 +10,7 @@ lightgbm>=4.6.0
 # Data analysis
 numpy>=2.3.3
 pandas>=2.3.2
+ta>=0.11.0
 
 # Visualization
 matplotlib>=3.10.6
