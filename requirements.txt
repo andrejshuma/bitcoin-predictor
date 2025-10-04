@@ -6,6 +6,7 @@ yfinance>=0.2.28  # optional, alternative source for BTC data
 scikit-learn>=1.7.2
 xgboost>=3.0.5
 lightgbm>=4.6.0
+tensorflow>=2.20.0
 
 # Data analysis
 numpy>=2.3.3

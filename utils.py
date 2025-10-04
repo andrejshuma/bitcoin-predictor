@@ -34,14 +34,20 @@ def sell_col(row):
         return np.nan
     return (row.low - row.next_low) / row.low
 
+# def define_activity(row):
+#     if row.signal_scaled < 0.2:
+#         return 'Strong Sell'
+#     elif row.signal_scaled < 0.4:
+#         return 'Sell'
+#     elif row.signal_scaled < 0.6:
+#         return 'Hold'
+#     elif row.signal_scaled < 0.8:
+#         return 'Buy'
+#     else:
+#         return 'Strong Buy'
+
 def define_activity(row):
-    if row.signal_scaled < 0.2:
-        return 'Strong Sell'
-    elif row.signal_scaled < 0.4:
+    if row.signal_scaled < 0.5:
         return 'Sell'
-    elif row.signal_scaled < 0.6:
-        return 'Hold'
-    elif row.signal_scaled < 0.8:
+    else :
         return 'Buy'
-    else:
-        return 'Strong Buy'
