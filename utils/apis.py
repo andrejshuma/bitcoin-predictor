@@ -4,13 +4,13 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 
 
-def fetch_binance_btc(timeframe: str, period: float):
+def fetch_binance_btc(timeframe: str, periodInDays: float):
     binance = ccxt.binance()
 
     symbol = 'BTC/USDT'
     limit = 1000
 
-    since_dt = datetime.now(timezone.utc) - timedelta(days=period)
+    since_dt = datetime.now(timezone.utc) - timedelta(days=periodInDays)
     since = int(since_dt.timestamp() * 1000)                        # second in milliseconds
 
     all_candles = []
