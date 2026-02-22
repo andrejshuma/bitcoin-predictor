@@ -58,7 +58,7 @@ class BTCSequenceDataset(Dataset):
         y = self.labels[actual_idx]
 
         X_tensor = torch.FloatTensor(X)
-        y_tensor = torch.LongTensor([y + 1])[0]
+        y_tensor = torch.LongTensor([y])[0]
 
         metadata = {
             "timestamp": str(self.timestamps[actual_idx]),
@@ -84,18 +84,13 @@ def select_features(df: pd.DataFrame) -> Tuple[list, list]:
     # Columns to NEVER use as features
     exclude = {
         "open", "high", "low", "close", "volume",  # raw OHLCV
-        "label", "hit_bars", "log_return",  # labels (would be leakage)
-        "tp_price", "sl_price", "atr_used", "reward_risk",  # label metadata
+        "label", "hit_bars", "market_return", "trade_return",  # labels (would be leakage)
+        "tp_price", "entry_price", "sl_price", "atr_used", "reward_risk",  # label metadata
     }
-
-    # Also exclude any EMA/BB/VWAP price-level columns (only use ratios/positions)
-    exclude_prefixes = ("ema_9", "ema_21", "ema_50", "ema_100", "ema_200",
-                        "bb_upper_", "bb_lower_", "vwap_24", "vwap_48")
 
     feature_cols = [
         col for col in df.columns
         if col not in exclude
-           and not any(col.startswith(p) for p in exclude_prefixes)
     ]
 
     excluded = [col for col in df.columns if col not in feature_cols]
@@ -145,14 +140,10 @@ def compute_class_weights(labels: np.ndarray) -> torch.Tensor:
     Computes class weights for imbalanced labels.
     Higher weight for minority classes.
 
-    labels: array with values in {-1, 0, 1}
-    returns: tensor of shape (3,) with weights for classes [0, 1, 2]
-             where 0=-1(short), 1=0(neutral), 2=1(long) after mapping
+    labels: array with values in {0, 1} for binary classification
+    returns: tensor of shape (2,) with weights for classes [0, 1]
     """
-    # Map -1,0,1 → 0,1,2
-    mapped = labels + 1
-
-    unique, counts = np.unique(mapped, return_counts=True)
+    unique, counts = np.unique(labels, return_counts=True)
     total = len(labels)
 
     # Inverse frequency weighting
@@ -161,15 +152,13 @@ def compute_class_weights(labels: np.ndarray) -> torch.Tensor:
     # Create weight tensor with correct ordering
     weight_dict = dict(zip(unique, weights))
     weight_tensor = torch.FloatTensor([
-        weight_dict.get(0, 1.0),  # short
-        weight_dict.get(1, 1.0),  # neutral
-        weight_dict.get(2, 1.0),  # long
+        weight_dict.get(0, 1.0),  # class 0
+        weight_dict.get(1, 1.0),  # class 1
     ])
 
     print(f"\nClass Weights:")
-    print(f"  Short  (0) : {weight_tensor[0]:.3f}")
-    print(f"  Neutral(1) : {weight_tensor[1]:.3f}")
-    print(f"  Long   (2) : {weight_tensor[2]:.3f}")
+    print(f"  Class 0 : {weight_tensor[0]:.3f}")
+    print(f"  Class 1 : {weight_tensor[1]:.3f}")
 
     return weight_tensor
 
@@ -203,8 +192,8 @@ def handle_nans(df: pd.DataFrame, feature_cols: list) -> pd.DataFrame:
 # ─────────────────────────────────────────────
 
 def preprocess_data(
-        features_path: Path = PROCESSED_DIR / "features_1h.parquet",
-        labels_path: Path = PROCESSED_DIR / "labels_1h.parquet",
+        features_file_name: str = "features_1h.parquet",
+        labels_file_name: str = "labels_1h.parquet",
         sequence_length: int = 60,
         train_pct: float = 0.70,
         val_pct: float = 0.15,
@@ -227,8 +216,11 @@ def preprocess_data(
 
     # ── Load data ──────────────────────────────────────────────────────────
     print(f"\n[1/7] Loading features and labels...")
-    features_df = pd.read_parquet(features_path)
-    labels_df = pd.read_parquet(labels_path)
+    features_full_path = PROCESSED_DIR / features_file_name
+    labels_full_path = PROCESSED_DIR / labels_file_name
+
+    features_df = pd.read_parquet(features_full_path)
+    labels_df = pd.read_parquet(labels_full_path)
 
     # Align indices — labels might be shorter due to dropping last bars
     common_idx = features_df.index.intersection(labels_df.index)
@@ -259,6 +251,7 @@ def preprocess_data(
     # ── Class weights ──────────────────────────────────────────────────────
     print(f"\n[6/7] Computing class weights...")
     class_weights = compute_class_weights(train_df["label"].values)
+    print(class_weights)
 
     # ── Create PyTorch datasets ────────────────────────────────────────────
     print(f"\n[7/7] Creating PyTorch datasets...")
@@ -266,7 +259,7 @@ def preprocess_data(
     train_dataset = BTCSequenceDataset(
         features=train_df[feature_cols].values,
         labels=train_df["label"].values,
-        returns=train_df["log_return"].values,
+        returns=train_df["trade_return"].values,
         timestamps=train_df.index,
         sequence_length=sequence_length,
     )
@@ -274,7 +267,7 @@ def preprocess_data(
     val_dataset = BTCSequenceDataset(
         features=val_df[feature_cols].values,
         labels=val_df["label"].values,
-        returns=val_df["log_return"].values,
+        returns=val_df["trade_return"].values,
         timestamps=val_df.index,
         sequence_length=sequence_length,
     )
@@ -282,7 +275,7 @@ def preprocess_data(
     test_dataset = BTCSequenceDataset(
         features=test_df[feature_cols].values,
         labels=test_df["label"].values,
-        returns=test_df["log_return"].values,
+        returns=test_df["trade_return"].values,
         timestamps=test_df.index,
         sequence_length=sequence_length,
     )

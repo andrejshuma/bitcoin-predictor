@@ -96,12 +96,12 @@ def add_momentum(df: pd.DataFrame) -> pd.DataFrame:
     # EMA stack — price position relative to each EMA
     for p in [9, 21, 50, 100, 200]:
         ema = ta.ema(c, length=p)
-        df[f"ema_{p}"]          = ema
+        # df[f"ema_{p}"]          = ema
         df[f"price_vs_ema_{p}"] = ((c - ema) / ema.replace(0, np.nan)).fillna(0)
 
-    df["ema_9_21_cross"]   = np.sign(df["ema_9"]  - df["ema_21"])
-    df["ema_21_50_cross"]  = np.sign(df["ema_21"] - df["ema_50"])
-    df["ema_50_200_cross"] = np.sign(df["ema_50"] - df["ema_200"])
+    df["ema_9_21_cross"]   = np.sign(ta.ema(c, length=9)  - ta.ema(c, length=21))
+    df["ema_21_50_cross"]  = np.sign(ta.ema(c, length=21) - ta.ema(c, length=50))
+    df["ema_50_200_cross"] = np.sign(ta.ema(c, length=50) - ta.ema(c, length=200))
 
     return df
 
@@ -234,33 +234,29 @@ def build_htf_context(htf_path: Path, prefix: str) -> pd.DataFrame:
 #  NORMALIZATION CONFIG
 # ─────────────────────────────────────────────
 
-# Columns to skip normalization entirely (categoricals / cyclical / raw prices)
-_SKIP_NORM = {
+# Patterns that indicate categorical/sign columns (should not be normalized)
+_SKIP_PATTERNS = ["_cross", "_dir", "divergence", "rsi_", "atr_"]
+
+_EXCLUDE = {
     "open", "high", "low", "close", "volume",
-    "candle_dir", "stoch_cross",
-    "ema_9_21_cross", "ema_21_50_cross", "ema_50_200_cross",
-    "macd_cross_12_26", "macd_cross_5_13",
-    "hour_sin", "hour_cos", "dow_sin", "dow_cos", "month_sin", "month_cos",
-    "obv_divergence",
+    "label", "hit_bars", "log_return",
+    "tp_price", "sl_price", "atr_used", "reward_risk",
 }
 
-# Already bounded — no need to z-score
-_ALREADY_BOUNDED = {
-    "mfi_14",
+# Also exclude raw EMA/BB/VWAP price levels
+_SKIP_PREFIXES = ("bb_upper_", "bb_lower_", "vwap_")
+
+# Features that should NOT have normalized versions (keep raw only)
+_SKIP_NORM = {
+    # Already bounded [0,1] or [-1,0]
     "stoch_k_14", "stoch_d_14", "stoch_k_21", "stoch_d_21",
+    "williams_r_14", "williams_r_21", "mfi_14",
     "bb_position_20_2", "bb_position_20_1",
     "bb_squeeze_20_2", "bb_squeeze_20_1",
-    "williams_r_14", "williams_r_21",
     "body_pct", "upper_wick_pct", "lower_wick_pct",
-    "rsi_divergence",
+    # Cyclical time
+    "hour_sin", "hour_cos", "dow_sin", "dow_cos", "month_sin", "month_cos",
 }
-
-# Column prefixes to skip (price-level EMA/BB values, not meaningful to normalize)
-_SKIP_PREFIXES = ("ema_", "bb_upper_", "bb_lower_", "vwap_")
-
-# Patterns that indicate categorical/sign columns (should not be normalized)
-_SKIP_PATTERNS = ["_cross", "_dir", "divergence", "rsi_"]
-
 
 def apply_rolling_normalization(df: pd.DataFrame, window: int = 200) -> pd.DataFrame:
     """
@@ -269,8 +265,8 @@ def apply_rolling_normalization(df: pd.DataFrame, window: int = 200) -> pd.DataF
     """
     cols = [
         col for col in df.columns
-        if col not in _SKIP_NORM
-           and col not in _ALREADY_BOUNDED
+        if col not in _EXCLUDE
+           and col not in _SKIP_NORM
            and not any(col.startswith(p) for p in _SKIP_PREFIXES)
            and not any(pattern in col for pattern in _SKIP_PATTERNS)
            and df[col].dtype in [np.float32, np.float64, float]
@@ -280,18 +276,15 @@ def apply_rolling_normalization(df: pd.DataFrame, window: int = 200) -> pd.DataF
     print(f"  Normalizing: {', '.join(cols)}")
     print(f"  Skiping: {', '.join(sorted(set(df.columns) - set(cols)))}")
 
-    norm_cols = {
-        f"{col}_norm": rolling_zscore(df[col], window)
-        for col in cols
-    }
+    for col in cols:
+        df[col] = rolling_zscore(df[col], window)
 
-    return pd.concat([df, pd.DataFrame(norm_cols, index=df.index)], axis=1)
+    return df
 
 
 # ─────────────────────────────────────────────
 #  MAIN PIPELINE
 # ─────────────────────────────────────────────
-
 def build_features(
     primary_tf: str = "1h",
     htf_list: list | None = None,
@@ -388,6 +381,8 @@ def inspect_features(df: pd.DataFrame) -> None:
         groups[k] = groups.get(k, 0) + 1
     for k, n in sorted(groups.items(), key=lambda x: -x[1]):
         print(f"  {k:<22} {n:>4} columns")
+
+    print(f"Total features: {len(df.columns)}")
 
 
 # ─────────────────────────────────────────────

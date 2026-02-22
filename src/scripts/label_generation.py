@@ -10,6 +10,7 @@ Whichever barrier is hit first determines the label.
 
 Output: ../data/processed/labels_1h.parquet
 """
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -46,7 +47,8 @@ def _triple_barrier_loop(
     n      = len(close)
     labels   = np.zeros(n, dtype=np.int8)
     hit_bars = np.zeros(n, dtype=np.int32)
-    returns  = np.zeros(n, dtype=np.float64)
+    market_returns  = np.zeros(n, dtype=np.float64)
+    trade_returns  = np.zeros(n, dtype=np.float64)
 
     for i in range(n):
         if np.isnan(atr[i]) or atr[i] == 0:
@@ -57,32 +59,32 @@ def _triple_barrier_loop(
         sl_price  = entry - sl_mult * atr[i]   # lower barrier
         end_bar   = min(i + max_bars, n - 1)   # vertical barrier
 
-        label   = 0   # default: time barrier hit
+        label   = -1   # default: time barrier hit
         bar_hit = max_bars
         exit_price = close[min(i + max_bars, n - 1)]  # default: time barrier
 
         for j in range(i + 1, end_bar + 1):
             # Check high for TP hit, low for SL hit
-            # Using high/low instead of close catches intrabar touches
             if high[j] >= tp_price:
                 label   = 1
                 bar_hit = j - i
                 exit_price = tp_price
                 break
             if low[j] <= sl_price:
-                label   = -1
+                label   = 0
                 bar_hit = j - i
                 exit_price = sl_price
                 break
 
-        # Actual log return at exit bar
-        ret            = np.log(exit_price / entry)
+        market_ret     = (exit_price - entry) / entry
+        trade_ret      = market_ret * label
 
-        labels[i]      = label
-        hit_bars[i]    = bar_hit
-        returns[i]     = ret
+        labels[i]         = label
+        hit_bars[i]       = bar_hit
+        market_returns[i] = market_ret
+        trade_returns[i]  = trade_ret
 
-    return labels, hit_bars, returns
+    return labels, hit_bars, market_returns, trade_returns
 
 
 # ─────────────────────────────────────────────
@@ -96,7 +98,8 @@ def build_labels(
     sl_mult: float             = 1.0,            # SL = entry - sl_mult × ATR
     max_bars: int              = 48,             # vertical barrier = 48h max hold
     min_atr_pct: float         = 0.003,          # skip bars where ATR < 0.3% of price (dead market)
-) -> pd.DataFrame:
+    min_trade_ret: float       = 0.005,          # skip bars where expected return < 0.5% (dead market)
+) -> tuple[Any, Any]:
     """
     Generates triple barrier labels for every bar in the features file.
 
@@ -114,11 +117,13 @@ def build_labels(
     DataFrame with columns:
         label        : -1 (short), 0 (neutral), 1 (long)
         hit_bars     : bars until barrier was hit
-        log_return   : actual log return at exit
+        trade_return : actual trade return at exit
+        market_return: actual market return at exit
         tp_price     : where the TP barrier was placed
         sl_price     : where the SL barrier was placed
         atr_used     : ATR value used for this bar
         reward_risk  : tp_mult / sl_mult ratio (constant but useful to have)
+        min_trade_ret: the minimum expected return threshold used for filtering (constant but useful to have)
     """
     print(f"Loading {features_path} ...")
     df = pd.read_parquet(features_path)
@@ -141,7 +146,7 @@ def build_labels(
     print(f"  Max hold    : {max_bars} bars ({max_bars}h)")
     print(f"  Min ATR pct : {min_atr_pct:.1%}")
 
-    labels, hit_bars, log_returns = _triple_barrier_loop(
+    labels, hit_bars, market_returns, trade_returns = _triple_barrier_loop(
         close, high, low, atr,
         tp_mult, sl_mult, max_bars
     )
@@ -150,8 +155,10 @@ def build_labels(
     out = pd.DataFrame(index=df.index)
     out["label"]       = labels
     out["hit_bars"]    = hit_bars
-    out["log_return"]  = log_returns
+    out["market_return"]  = market_returns
+    out["trade_return"]  = trade_returns
     out["tp_price"]    = close + tp_mult * atr
+    out["entry_price"] = close
     out["sl_price"]    = close - sl_mult * atr
     out["atr_used"]    = atr
     out["reward_risk"] = tp_mult / sl_mult
@@ -163,6 +170,11 @@ def build_labels(
     dead_market = atr_pct < min_atr_pct
     out.loc[dead_market, "label"] = 0
     print(f"  Dead market bars filtered : {dead_market.sum():,}")
+
+    # Where the expected return (based on the barrier distances) is very small, also label 0
+    small_moves = trade_returns < min_trade_ret
+    out.loc[small_moves, "label"] = 0
+    print(f"  Small moves (< {min_trade_ret}) filtered: {small_moves.sum():,}")
 
     # ── Drop the last max_bars rows ────────────────────────────────────────
     # These bars don't have enough forward data for the vertical barrier
@@ -177,7 +189,24 @@ def build_labels(
     out.to_parquet(out_path)
     print(f"\n✓  Saved → {out_path}")
 
-    return out
+
+    # Labels for trade (0 no trade, 1 trade)
+    labels_trade = out
+    labels_trade["label"] = (labels_trade["label"] != -1).astype(int)
+    labels_trade_path = PROCESSED_DIR / "labels_trade_1h.parquet"
+    labels_trade.to_parquet(labels_trade_path)
+    print(f"Labels trade: {len(labels_trade)}")
+    print(f"\n✓  Saved → {labels_trade_path}")
+
+    # Labels for trade (0 short, 1 long)
+    labels_direction = out.loc[out["label"] != -1]
+    labels_direction_path = PROCESSED_DIR / "labels_direction_1h.parquet"
+    labels_direction.to_parquet(labels_direction_path)
+    print(f"Labels direction: {len(labels_direction)}")
+    print(f"\n✓  Saved → {labels_direction_path}")
+
+
+    return labels_trade, labels_direction
 
 
 # ─────────────────────────────────────────────
@@ -204,40 +233,12 @@ def _print_label_stats(labels: pd.DataFrame) -> None:
             avg = labels.loc[mask, "hit_bars"].mean()
             print(f"  {name:<10} : {avg:.1f} bars")
 
-    print(f"\n  AVG LOG RETURN AT EXIT")
+    print(f"\n  AVG TRADE RETURN AT EXIT")
     for lbl, name in [(-1, "Short"), (0, "Neutral"), (1, "Long")]:
         mask = labels["label"] == lbl
         if mask.sum() > 0:
-            avg = labels.loc[mask, "log_return"].mean() * 100
+            avg = labels.loc[mask, "trade_return"].mean() * 100
             print(f"  {name:<10} : {avg:+.3f}%")
-
-
-def plot_label_distribution(labels: pd.DataFrame) -> None:
-    import matplotlib.pyplot as plt
-
-    fig, axes = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
-
-    # Add a year-month column, group manually
-    tmp = labels[["label"]].copy()
-    tmp["month"] = tmp.index.to_period("M").to_timestamp()
-
-    monthly = tmp.groupby(["month", "label"]).size().reset_index(name="count")
-
-    for ax, (lbl, name, color) in zip(axes, [
-        ( 1, "Long  (+1)", "green"),
-        ( 0, "Neutral (0)", "gray"),
-        (-1, "Short (-1)", "red"),
-    ]):
-        data = monthly[monthly["label"] == lbl]
-        ax.bar(data["month"], data["count"], color=color, alpha=0.7, width=20)
-        ax.set_ylabel(name, fontsize=10)
-        ax.grid(axis="y", alpha=0.3)
-
-    axes[0].set_title("Label Distribution Over Time (monthly)", fontsize=12)
-    plt.tight_layout()
-    plt.savefig("../../data/processed/label_distribution.png", dpi=150)
-    plt.show()
-    print("Saved → ../../data/processed/label_distribution.png")
 
 
 # ─────────────────────────────────────────────
@@ -245,12 +246,12 @@ def plot_label_distribution(labels: pd.DataFrame) -> None:
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
-    labels = build_labels(
+    build_labels(
         features_path = PROCESSED_DIR / "features_1h.parquet",
         atr_col       = "atr_14",
-        tp_mult       = 1.0,    # TP = 1× ATR away
-        sl_mult       = 1.0,    # SL = 1× ATR away  →  2:1 reward/risk
-        max_bars      = 48,     # max 48h hold
-        min_atr_pct   = 0.003,  # skip if ATR < 0.3% of price
+        tp_mult       = 1.5,    # TP = tp_mult × ATR away
+        sl_mult       = 1.5,    # SL = sl_mult × ATR away
+        max_bars      = 36,     # max 48h hold
+        min_atr_pct   = 0.005,  # skip if ATR < 0.3% of price
+        min_trade_ret = 0.005,  # skip if expected return < 0.5% (dead market)
     )
-    plot_label_distribution(labels)
