@@ -59,7 +59,7 @@ def _triple_barrier_loop(
         sl_price  = entry - sl_mult * atr[i]   # lower barrier
         end_bar   = min(i + max_bars, n - 1)   # vertical barrier
 
-        label   = -1   # default: time barrier hit
+        label   = 0   # default: time barrier hit
         bar_hit = max_bars
         exit_price = close[min(i + max_bars, n - 1)]  # default: time barrier
 
@@ -71,13 +71,13 @@ def _triple_barrier_loop(
                 exit_price = tp_price
                 break
             if low[j] <= sl_price:
-                label   = 0
+                label   = -1
                 bar_hit = j - i
                 exit_price = sl_price
                 break
 
         market_ret     = (exit_price - entry) / entry
-        trade_ret      = market_ret * label
+        trade_ret      = abs(market_ret)
 
         labels[i]         = label
         hit_bars[i]       = bar_hit
@@ -184,27 +184,37 @@ def build_labels(
     # ── Print distribution ─────────────────────────────────────────────────
     _print_label_stats(out)
 
-    # ── Save ──────────────────────────────────────────────────────────────
+    # ── Save original labels ──────────────────────────────────────────────
     out_path = PROCESSED_DIR / "labels_1h.parquet"
     out.to_parquet(out_path)
     print(f"\n✓  Saved → {out_path}")
 
-
-    # Labels for trade (0 no trade, 1 trade)
-    labels_trade = out
-    labels_trade["label"] = (labels_trade["label"] != -1).astype(int)
+    # ── Labels for TRADE/NO-TRADE (binary classification) ────────────────
+    labels_trade = out.copy()
+    # 0 = no trade (label was 0), 1 = trade (label was -1 or 1)
+    labels_trade["label"] = (labels_trade["label"] != 0).astype(int)
     labels_trade_path = PROCESSED_DIR / "labels_trade_1h.parquet"
     labels_trade.to_parquet(labels_trade_path)
-    print(f"Labels trade: {len(labels_trade)}")
-    print(f"\n✓  Saved → {labels_trade_path}")
+    print(f"\nLabels trade (should we enter?): {len(labels_trade)}")
+    print(
+        f"  No trade (0): {(labels_trade['label'] == 0).sum():,} ({(labels_trade['label'] == 0).sum() / len(labels_trade) * 100:.1f}%)")
+    print(
+        f"  Trade (1): {(labels_trade['label'] == 1).sum():,} ({(labels_trade['label'] == 1).sum() / len(labels_trade) * 100:.1f}%)")
+    print(f"✓  Saved → {labels_trade_path}")
 
-    # Labels for trade (0 short, 1 long)
-    labels_direction = out.loc[out["label"] != -1]
+    # ── Labels for DIRECTION (long vs short, for tradeable bars only) ────
+    # Only keep bars where we should trade (label != 0)
+    labels_direction = out.loc[out["label"] != 0].copy()
+    # Remap: -1 (short) → 0, 1 (long) → 1
+    labels_direction["label"] = (labels_direction["label"] == 1).astype(int)
     labels_direction_path = PROCESSED_DIR / "labels_direction_1h.parquet"
     labels_direction.to_parquet(labels_direction_path)
-    print(f"Labels direction: {len(labels_direction)}")
-    print(f"\n✓  Saved → {labels_direction_path}")
-
+    print(f"\nLabels direction (long vs short, tradeable bars only): {len(labels_direction)}")
+    print(
+        f"  Short (0): {(labels_direction['label'] == 0).sum():,} ({(labels_direction['label'] == 0).sum() / len(labels_direction) * 100:.1f}%)")
+    print(
+        f"  Long (1): {(labels_direction['label'] == 1).sum():,} ({(labels_direction['label'] == 1).sum() / len(labels_direction) * 100:.1f}%)")
+    print(f"✓  Saved → {labels_direction_path}")
 
     return labels_trade, labels_direction
 
